@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh.file;
+package io.github.huiyu.ssh4j.file;
 
 public enum FileAction {
     // POSIX style

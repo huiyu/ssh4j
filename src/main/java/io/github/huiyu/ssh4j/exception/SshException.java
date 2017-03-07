@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh.exception;
+package io.github.huiyu.ssh4j.exception;
 
 public class SshException extends RuntimeException {
 
@@ -17,7 +17,10 @@ public class SshException extends RuntimeException {
         super(cause);
     }
 
-    public SshException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
+    public SshException(String message,
+                        Throwable cause,
+                        boolean enableSuppression,
+                        boolean writableStackTrace) {
         super(message, cause, enableSuppression, writableStackTrace);
     }
 }

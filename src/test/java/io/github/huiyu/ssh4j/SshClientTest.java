@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh;
+package io.github.huiyu.ssh4j;
 
 import static org.junit.Assert.*;
 

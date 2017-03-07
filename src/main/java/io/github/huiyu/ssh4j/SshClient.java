@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh;
+package io.github.huiyu.ssh4j;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
@@ -10,14 +10,15 @@ import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
 import com.jcraft.jsch.SftpATTRS;
 import com.jcraft.jsch.SftpException;
+
+import io.github.huiyu.ssh4j.execute.ExecuteResult;
+import io.github.huiyu.ssh4j.file.FilePermission;
+import io.github.huiyu.ssh4j.file.FileType;
+import io.github.huiyu.ssh4j.file.SshFile;
 import jodd.io.StreamUtil;
 import jodd.util.StringUtil;
-import me.jeffreyu.ssh.execute.ExecuteResult;
-import me.jeffreyu.ssh.exception.SshException;
-import me.jeffreyu.ssh.file.FilePermission;
-import me.jeffreyu.ssh.file.FileType;
-import me.jeffreyu.ssh.file.SshFile;
-import me.jeffreyu.ssh.util.PathUtil;
+import io.github.huiyu.ssh4j.exception.SshException;
+import io.github.huiyu.ssh4j.util.PathUtil;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;

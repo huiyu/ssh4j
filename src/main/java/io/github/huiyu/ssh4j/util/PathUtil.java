@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh.util;
+package io.github.huiyu.ssh4j.util;
 
 import com.google.common.base.Splitter;
 

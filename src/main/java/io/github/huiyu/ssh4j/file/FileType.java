@@ -1,7 +1,7 @@
-package me.jeffreyu.ssh.file;
+package io.github.huiyu.ssh4j.file;
 
 
-import me.jeffreyu.ssh.exception.SshException;
+import io.github.huiyu.ssh4j.exception.SshException;
 
 /**
  * Linux File Type

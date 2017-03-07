@@ -1,4 +1,4 @@
-package me.jeffreyu.ssh.execute;
+package io.github.huiyu.ssh4j.execute;
 
 public class ExecuteResult {
 

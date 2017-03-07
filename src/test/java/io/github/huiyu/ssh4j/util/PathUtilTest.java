@@ -1,6 +1,5 @@
-package me.jeffreyu.ssh.util;
+package io.github.huiyu.ssh4j.util;
 
-import me.jeffreyu.ssh.util.PathUtil;
 import org.junit.Test;
 
 import static org.junit.Assert.*;

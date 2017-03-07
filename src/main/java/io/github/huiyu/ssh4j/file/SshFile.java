@@ -1,7 +1,7 @@
-package me.jeffreyu.ssh.file;
+package io.github.huiyu.ssh4j.file;
 
 import jodd.util.StringUtil;
-import me.jeffreyu.ssh.util.PathUtil;
+import io.github.huiyu.ssh4j.util.PathUtil;
 
 import java.util.Date;
 
