@@ -1,13 +1,6 @@
-package io.github.huiyu.ssh4j.file;
+package io.github.huiyu.ssh4j;
 
 
-import io.github.huiyu.ssh4j.exception.SshException;
-
-/**
- * Linux File Type
- *
- * @author Jeffrey Yu
- */
 public enum FileType {
 
     REGULAR(FileType.S_IFREG),

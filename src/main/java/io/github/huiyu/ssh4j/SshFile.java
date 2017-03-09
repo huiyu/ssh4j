@@ -1,7 +1,6 @@
-package io.github.huiyu.ssh4j.file;
+package io.github.huiyu.ssh4j;
 
-import jodd.util.StringUtil;
-import io.github.huiyu.ssh4j.util.PathUtil;
+import com.google.common.base.Strings;
 
 import java.util.Date;
 
@@ -98,7 +97,7 @@ public class SshFile {
     }
 
     public String getParent() {
-        if (StringUtil.isBlank(path)) {
+        if (Strings.isNullOrEmpty(path)) {
             return null;
         } else {
             return PathUtil.getParentPath(path);

@@ -1,10 +1,5 @@
-package io.github.huiyu.ssh4j.file;
+package io.github.huiyu.ssh4j;
 
-/**
- * File permission
- *
- * @author Jeffrey Yu
- */
 public class FilePermission {
 
     static final int S_ISUID = 04000; // set user ID on execution
@@ -23,7 +18,7 @@ public class FilePermission {
 
     private static final FileAction[] FS_ACTION_VALUES = FileAction.values();
 
-    private int flag;
+    protected int flag;
     private FileAction userAction;
     private FileAction groupAction;
     private FileAction otherAction;

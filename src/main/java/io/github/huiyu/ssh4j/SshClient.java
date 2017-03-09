@@ -1,7 +1,8 @@
 package io.github.huiyu.ssh4j;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
+import com.google.common.base.Strings;
+import com.google.common.io.ByteStreams;
+
 import com.jcraft.jsch.ChannelExec;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.ChannelSftp.LsEntry;
@@ -10,15 +11,6 @@ import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
 import com.jcraft.jsch.SftpATTRS;
 import com.jcraft.jsch.SftpException;
-
-import io.github.huiyu.ssh4j.execute.ExecuteResult;
-import io.github.huiyu.ssh4j.file.FilePermission;
-import io.github.huiyu.ssh4j.file.FileType;
-import io.github.huiyu.ssh4j.file.SshFile;
-import jodd.io.StreamUtil;
-import jodd.util.StringUtil;
-import io.github.huiyu.ssh4j.exception.SshException;
-import io.github.huiyu.ssh4j.util.PathUtil;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -35,145 +27,83 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Vector;
 
-import static com.google.common.base.Preconditions.*;
+import static io.github.huiyu.ssh4j.PathUtil.createPath;
 
-/**
- * Ssh Client
- *
- * @author Jeffrey Yu
- */
 public class SshClient implements Closeable {
+
+    private static final int KEEP_ALIVE_INTERVAL = 1000 * 5;
 
     private static final String MSG_FILE_NOT_FOUND = "File not found: ";
     private static final String MSG_FILE_ALREADY_EXISTS = "File already exists: ";
     private static final String MSG_NOT_A_FILE = "Not a file: ";
     private static final String MSG_NOT_A_DIRECTORY = "Not a directory: ";
 
-    private static final int DEFAULT_SSH_PORT = 22;
-
     private static final String CHANNEL_SFTP = "sftp";
     private static final String CHANNEL_EXEC = "exec";
 
+    private static final String SLASH = "/";
+
     private String username;
-    private String hostname;
+    private String host;
     private int port;
     private AuthType authType;
     private String identify;
+    private boolean keepAlive;
+
+    private volatile String homePath;
 
     private Session session;
-    private ChannelSftp sftp;
+    private ChannelSftp sftpChannel;
 
-    private Map<String, String> configs = new HashMap<>();
+    private Map<String, String> configs;
 
-    public SshClient(String username, String hostname, int port) {
-        this.username = username;
-        this.hostname = hostname;
-        this.port = port;
+    private List<String> sourceFiles;
+
+    private SshClient() {
     }
 
-    public SshClient(String username, String hostname) {
-        this(username, hostname, DEFAULT_SSH_PORT);
+    public static Builder of(String username, String hostname) {
+        return new Builder(username, hostname, 22);
     }
 
-    public static void main(String[] args) {
-        SshClient client = null;
-        try {
-            client = new SshClient("root", "10.211.55.10");
-            client.authenticateWithPassword("adminpass");
-            client.open();
-            System.out.println(client.execute("ls -al").stdout);
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            client.close();
-        }
-    }
-
-    public void authenticateWithPassword(String password) {
-        if (StringUtil.isBlank(password)) {
-            throw new IllegalArgumentException("Password path can't be null or empty.");
-        }
-        this.authType = AuthType.PASSWORD;
-        this.identify = password;
-    }
-
-    public void authenticateWithPublicKey(String keyPath) {
-        if (StringUtil.isBlank(keyPath)) {
-            throw new IllegalArgumentException("Public key path can't be null or empty.");
-        }
-        this.authType = AuthType.PUBLIC_KEY;
-        this.identify = keyPath;
-    }
-
-    public void setConfig(String key, String value) {
-        configs.put(key, value);
-        if (session != null) {
-            session.setConfig(key, value);
-        }
+    public static Builder of(String username, String hostname, int port) {
+        return new Builder(username, hostname, port);
     }
 
     public ExecuteResult execute(String command) {
-        return this.execute(command, null);
+        return this.execute(new String[]{command});
     }
 
-    public ExecuteResult execute(String command, Map<String, String> environments) {
-        List<String> commands = new ArrayList<>(1);
-        commands.add(command);
-        return this.execute(commands, environments);
-    }
-
-
-    public ExecuteResult execute(List<String> commands) {
-        return this.execute(commands);
-    }
-
-    public ExecuteResult execute(List<String> commands, Map<String, String> environments) {
+    public ExecuteResult execute(String[] commands) {
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
-        int exitCode = this.execute(commands, stdout, stderr, environments);
+        int exitCode = this.execute(commands, stdout, stderr);
         return new ExecuteResult(stdout.toString(), stderr.toString(), exitCode);
     }
 
-
     public int execute(String command, OutputStream stdout, OutputStream stderr) {
-        return this.execute(command, stdout, stderr);
-    }
-
-    public int execute(String command, OutputStream stdout, OutputStream stderr, Map<String, String> environments) {
-        List<String> commands = new ArrayList<>(1);
-        commands.add(command);
-        return this.execute(commands, stdout, stderr, environments);
-    }
-
-    public int execute(List<String> commands, OutputStream stdout, OutputStream stderr) {
+        String[] commands = {command};
         return this.execute(commands, stdout, stderr);
     }
 
-    public int execute(List<String> commands, OutputStream stdout, OutputStream stderr,
-                       Map<String, String> environments) {
+    public int execute(String[] commands, OutputStream stdout, OutputStream stderr) {
         try {
-            ChannelExec ch = (ChannelExec) session.openChannel(CHANNEL_EXEC);
+            ChannelExec ch = (ChannelExec) getSession().openChannel(CHANNEL_EXEC);
 
-            // environments
-            if (environments != null && !environments.isEmpty()) {
-                for (Map.Entry<String, String> environment : environments.entrySet()) {
-                    ch.setEnv(environment.getKey(), environment.getValue());
-                }
-            }
+            String command = buildCommand(commands);
 
-            String comand = buildCommand(commands);
-            ch.setCommand(comand);
+            ch.setCommand(command);
             try {
-
                 InputStream out = ch.getInputStream();
                 InputStream err = ch.getErrStream();
                 ch.connect();
                 if (stdout != null) {
-                    StreamUtil.copy(out, stdout);
+                    ByteStreams.copy(out, stdout);
                 }
                 if (stderr != null) {
-                    StreamUtil.copy(err, stderr);
+                    ByteStreams.copy(err, stderr);
                 }
 
                 int exitCode;
@@ -191,16 +121,27 @@ public class SshClient implements Closeable {
         }
     }
 
-    private String buildCommand(List<String> commands) {
-        return Joiner.on(" && ").skipNulls().join(commands);
+    private String buildCommand(String[] commands) {
+        if (commands.length == 0)
+            throw new IllegalArgumentException("No available command");
+
+        StringBuilder builder = new StringBuilder();
+        for (String sourceFile : sourceFiles)
+            builder.append("source ").append(sourceFile).append(" \n ");
+
+        builder.append(commands[0]);
+        for (int i = 1; i < commands.length; i++)
+            builder.append(" \n ").append(commands[i]);
+
+        return builder.toString();
     }
 
     public String getUsername() {
         return username;
     }
 
-    public String getHostname() {
-        return hostname;
+    public String getHost() {
+        return host;
     }
 
     public int getPort() {
@@ -211,32 +152,31 @@ public class SshClient implements Closeable {
         return authType;
     }
 
-    public Session getSession() {
-        return session;
+    public boolean isKeepAlive() {
+        return keepAlive;
+    }
+
+    public Map<String, String> getConfigs() {
+        return configs;
     }
 
     public String getConfig(String key) {
         String value = configs.get(key);
-        if (StringUtil.isBlank(value) && session != null) {
+        if (Strings.isNullOrEmpty(value) && session != null) {
             value = session.getConfig(key);
         }
         return value;
     }
 
-    public void open() {
+    public synchronized void open() {
         checkNotNull(authType);
-        setConfig("StrictHostKeyChecking", "no");
         try {
             JSch jsch = new JSch();
-
-            if (authType == null) {
-                loadAuthentication();
-            }
 
             if (authType.equals(AuthType.PUBLIC_KEY)) {
                 jsch.addIdentity(identify);
             }
-            session = jsch.getSession(username, hostname, port);
+            session = jsch.getSession(username, host, port);
             if (authType.equals(AuthType.PASSWORD)) {
                 session.setPassword(this.identify);
             }
@@ -244,22 +184,29 @@ public class SshClient implements Closeable {
             for (Map.Entry<String, String> entry : configs.entrySet()) {
                 session.setConfig(entry.getKey(), entry.getValue());
             }
+
+            if (keepAlive) {
+                session.setServerAliveInterval(KEEP_ALIVE_INTERVAL);
+            }
+
             session.connect();
 
-            // sftp channel
-            sftp = (ChannelSftp) session.openChannel(CHANNEL_SFTP);
         } catch (JSchException e) {
             throw new SshException(e);
         }
     }
 
     public SshFile getFile(String path) {
+
+        path = getAbsolutePath(path);
+
         try {
-            SftpATTRS attr = sftp.stat(path);
+            SftpATTRS attr = getSftpChannel().stat(path);
+
             // FIXME following 2 statements cost about 400ms per each.
             String groupName = getGroupNameByGID(attr.getGId());
             String userName = getUserNameByUID(attr.getUId());
-            String fileName = PathUtil.getFileName(path);
+            String fileName = getFileName(path);
 
             SshFile file = new SshFile();
             file.setName(fileName);
@@ -281,7 +228,6 @@ public class SshClient implements Closeable {
         }
     }
 
-
     private String getUserNameByUID(int uid) {
         String getUserCmd = "getent passwd | awk -F: '$3 == " + uid + " { print $1 }'";
 
@@ -291,11 +237,11 @@ public class SshClient implements Closeable {
         this.execute(getUserCmd, out, err);
 
         String errMsg = err.toString();
-        if (StringUtil.isNotBlank(errMsg)) {
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         } else {
             String groupName = out.toString().trim();
-            if (StringUtil.isBlank(groupName)) {
+            if (Strings.isNullOrEmpty(groupName)) {
                 return null;
             } else {
                 return groupName;
@@ -312,14 +258,15 @@ public class SshClient implements Closeable {
         this.execute(getGroupCmd, out, err);
 
         String errMsg = err.toString();
-        if (StringUtil.isNotBlank(errMsg)) {
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         } else {
             String userName = out.toString().trim();
-            if (StringUtil.isBlank(userName)) {
+            if (Strings.isNullOrEmpty(userName)) {
                 return null;
             } else {
-                List<String> tokens = Splitter.on(":").omitEmptyStrings().trimResults().splitToList(userName);
+                List<String> tokens = splitStringAndOmitEmpty(userName, ":");
+                // Splitter.on(":").omitEmptyStrings().trimResults().splitToList(userName);
                 if (tokens.isEmpty()) {
                     return null;
                 } else {
@@ -330,8 +277,10 @@ public class SshClient implements Closeable {
     }
 
     public List<SshFile> listFiles(String path) {
+        path = getAbsolutePath(path);
+
         try {
-            java.util.Vector vector = sftp.ls(path);
+            Vector vector = getSftpChannel().ls(path);
             if (vector == null || vector.isEmpty()) {
                 return Collections.EMPTY_LIST;
             }
@@ -348,7 +297,7 @@ public class SshClient implements Closeable {
                 SftpATTRS attr = entry.getAttrs();
                 SshFile file = new SshFile();
                 file.setName(entry.getFilename());
-                String filePath = PathUtil.createPath(path, entry.getFilename());
+                String filePath = createPath(path, entry.getFilename());
                 file.setPath(getAbsolutePath(filePath));
                 file.setLength(attr.getSize());
                 FilePermission permission = new FilePermission(attr.getPermissions());
@@ -356,10 +305,10 @@ public class SshClient implements Closeable {
                 FileType t = FileType.parse(attr.getPermissions() & FileType.S_IFMT);
                 file.setType(t);
 
-                List<String> tokens = Splitter.on(" ").omitEmptyStrings().trimResults()
-                                              .splitToList(entry.getLongname());
+                List<String> tokens = splitStringAndOmitEmpty(entry.getLongname(), " ");
                 String owner = tokens.get(2);
                 String group = tokens.get(3);
+
                 file.setOwner(owner);
                 file.setGroup(group);
 
@@ -376,16 +325,18 @@ public class SshClient implements Closeable {
         }
     }
 
-    public InputStream openFile(String path) {
+    public InputStream readFile(String path) {
         SshFile f = this.getFile(path);
+
         if (f == null) {
             throw new SshException(MSG_FILE_NOT_FOUND + path);
         }
         if (!f.isFile()) {
             throw new SshException(MSG_NOT_A_FILE + path);
         }
+
         try {
-            return sftp.get(path);
+            return getSftpChannel().get(path);
         } catch (SftpException e) {
             throw new SshException(e);
         }
@@ -393,16 +344,22 @@ public class SshClient implements Closeable {
 
     /**
      * Open an output stream.
-     *
-     * @param path
-     * @return
      */
     public OutputStream createFile(String path) {
-        if (exists(path)) {
+        return createFile(path, false);
+    }
+
+    public OutputStream createFile(String path, boolean overwrite) {
+        if (path.startsWith("~")) {
+            path = path.replace("~", ".");
+        }
+
+        if (exists(path) && !overwrite) {
             throw new SshException(MSG_FILE_ALREADY_EXISTS + path);
         }
+
         try {
-            return sftp.put(path, ChannelSftp.OVERWRITE);
+            return getSftpChannel().put(path, ChannelSftp.OVERWRITE);
         } catch (SftpException e) {
             throw new SshException(e);
         }
@@ -412,8 +369,9 @@ public class SshClient implements Closeable {
         if (!exists(path)) {
             throw new SshException(MSG_FILE_NOT_FOUND + path);
         }
+
         try {
-            return sftp.put(path, ChannelSftp.APPEND);
+            return getSftpChannel().put(path, ChannelSftp.APPEND);
         } catch (SftpException e) {
             throw new SshException(e);
         }
@@ -423,7 +381,7 @@ public class SshClient implements Closeable {
         boolean exists = false;
         try {
             String p = getAbsolutePath(path);
-            exists = StringUtil.isNotBlank(p);
+            exists = !Strings.isNullOrEmpty(p);
         } catch (Exception e) {
         }
         return exists;
@@ -431,13 +389,10 @@ public class SshClient implements Closeable {
 
     /**
      * Create symbolic link
-     *
-     * @param src
-     * @param dst
      */
     public void createSymLink(String src, String dst) {
         try {
-            sftp.symlink(src, dst);
+            getSftpChannel().symlink(src, dst);
         } catch (SftpException e) {
             throw new SshException(e);
         }
@@ -445,11 +400,9 @@ public class SshClient implements Closeable {
 
     /**
      * Read symbolic link
-     *
-     * @param path
-     * @return
      */
     public String readSymLink(String path) {
+        ChannelSftp sftp = getSftpChannel();
         try {
             return sftp.readlink(path);
         } catch (SftpException e) {
@@ -457,12 +410,6 @@ public class SshClient implements Closeable {
         }
     }
 
-    /**
-     * Move files, correspond to `mv` command.
-     *
-     * @param src
-     * @param dst
-     */
     public void move(String src, String dst) {
         if (!exists(src)) {
             throw new SshException(MSG_FILE_NOT_FOUND + src);
@@ -473,13 +420,14 @@ public class SshClient implements Closeable {
 
         String command = "mv " + src + " " + dst;
         ExecuteResult result = this.execute(command);
-        String errMsg = result.stderr;
-        if (StringUtil.isNotBlank(errMsg)) {
+        String errMsg = result.err;
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         }
     }
 
     private boolean isDir(String path) {
+        ChannelSftp sftp = getSftpChannel();
         try {
             SftpATTRS attrs = sftp.stat(path);
             return attrs.isDir();
@@ -488,7 +436,29 @@ public class SshClient implements Closeable {
         }
     }
 
+    public String getHomePath() {
+        if (Strings.isNullOrEmpty(homePath)) {
+            synchronized (this) {
+                if (Strings.isNullOrEmpty(homePath)) {
+                    ExecuteResult result = execute("echo $HOME");
+                    if (!result.hasError()) {
+                        homePath = result.out.trim();
+                    } else {
+                        throw new SshException("Can't fetch environment variable: $HOME");
+                    }
+
+                }
+            }
+        }
+        return homePath;
+    }
+
     public String getAbsolutePath(String path) throws SshException {
+        if (path.startsWith("~")) {
+            path = getHomePath() + path.substring(1);
+        }
+
+        ChannelSftp sftp = getSftpChannel();
         try {
             return sftp.realpath(path);
         } catch (SftpException e) {
@@ -498,22 +468,18 @@ public class SshClient implements Closeable {
 
     /**
      * Smart copy local file to remote.
-     *
-     * If source is a directory, copy it to destination.
-     * Otherwise, if destination is directory, copy source file to it.
-     * Otherwise, try to copy source file to destination file.
-     *
-     * @param src
-     * @param dst
+     * <p>
+     * If source is a directory, copy it to destination. Otherwise, if
+     * destination is directory, copy source file to it. Otherwise, try to copy
+     * source file to destination file.
      */
-    public void copyFromLocal(String src, String dst) {
-
-        if (StringUtil.isBlank(src)) {
+    public void copyFromLocal(String src, String dst, boolean overwrite) {
+        if (Strings.isNullOrEmpty(src) || Strings.isNullOrEmpty(dst)) {
             throw new IllegalArgumentException("File path can't be empty.");
         }
 
-        if (StringUtil.isBlank(dst)) {
-            dst = ".";
+        if (dst.startsWith("~")) {
+            dst = getHomePath() + dst.substring(1);
         }
 
         File srcFile = new File(src);
@@ -529,10 +495,14 @@ public class SshClient implements Closeable {
             doCopyLocalFileToRemoteDir(src, dst);
             return;
         }
-        doCopyLocalFile(src, dst);
+        doCopyLocalFile(src, dst, overwrite);
     }
 
-    private void doCopyLocalFile(String src, String dst) {
+    public void copyFromLocal(String src, String dst) {
+        copyFromLocal(src, dst, false);
+    }
+
+    private void doCopyLocalFile(String src, String dst, boolean overwrite) {
         File srcFile = new File(src);
         if (!srcFile.exists()) {
             throw new SshException(MSG_FILE_NOT_FOUND + src);
@@ -542,12 +512,12 @@ public class SshClient implements Closeable {
         }
 
         // mkdirs
-        String parent = PathUtil.getParentPath(dst);
-        if (StringUtil.isNotBlank(parent) && !exists(parent)) {
+        String parent = getParentPath(dst);
+        if (!Strings.isNullOrEmpty(parent) && !exists(parent)) {
             this.mkdir(parent, true);
         }
 
-        if (exists(dst)) {
+        if (exists(dst) && !overwrite) {
             if (isDir(dst)) {
                 throw new SshException("Remote destination '" + dst + "' is a directory");
             }
@@ -555,20 +525,17 @@ public class SshClient implements Closeable {
         }
 
         // do copy regular file
-        try (FileInputStream in = new FileInputStream(srcFile);
-             OutputStream out = this.createFile(dst)) {
-            StreamUtil.copy(in, out);
+        try (FileInputStream in = new FileInputStream(srcFile); OutputStream out = this.createFile(dst, overwrite)) {
+            ByteStreams.copy(in, out);
         } catch (IOException e) {
             throw new SshException(e);
         }
 
-
         // TODO checking
+    }
 
-//         dstFile = getFile(dst);
-//         if (dstFile.getLength() != srcFile.length()) {
-//         throw new IOException("Copy file failed of '" + src + "' to '" + dst + "' due to different sizes");
-//         }
+    private void doCopyLocalFile(String src, String dst) {
+        doCopyLocalFile(src, dst, false);
     }
 
     private void doCopyLocalFileToRemote(String src, String dst) {
@@ -590,7 +557,7 @@ public class SshClient implements Closeable {
         }
 
         for (File f : files) {
-            String dstFilePath = PathUtil.createPath(dst, f.getName());
+            String dstFilePath = createPath(dst, f.getName());
             if (f.isDirectory()) {
                 doCopyLocalFileToRemote(f.getPath(), dstFilePath);
             } else {
@@ -604,18 +571,14 @@ public class SshClient implements Closeable {
             throw new SshException(MSG_NOT_A_DIRECTORY + dst);
         }
         File srcFile = new File(src);
-        String path = PathUtil.createPath(dst, srcFile.getName());
+        String path = createPath(dst, srcFile.getName());
         doCopyLocalFile(src, path);
     }
 
-
     /**
-     * Smart copy. If source is a directory, copy it to destination.
-     * Otherwise, if destination is directory, copy source file to it.
-     * Otherwise, try to copy source file to destination file.
-     *
-     * @param src
-     * @param dst
+     * Smart copy. If source is a directory, copy it to destination. Otherwise,
+     * if destination is directory, copy source file to it. Otherwise, try to
+     * copy source file to destination file.
      */
     public void copyToLocal(String src, String dst) {
         if (!exists(src)) {
@@ -654,16 +617,14 @@ public class SshClient implements Closeable {
 
         // do copy regular file
 
-        try (InputStream in = this.openFile(src);
-             OutputStream out = new FileOutputStream(dstFile)) {
-            StreamUtil.copy(in, out);
+        try (InputStream in = this.readFile(src); OutputStream out = new FileOutputStream(dstFile)) {
+            ByteStreams.copy(in, out);
         } catch (IOException e) {
             throw new SshException(e);
         }
 
         // TODO checking
     }
-
 
     private void doCopyRemoteDirToLocal(String src, String dst) {
         File dstDir = new File(dst);
@@ -678,7 +639,7 @@ public class SshClient implements Closeable {
             if (".".equals(fName) || "..".equals(fName)) {
                 continue;
             }
-            String path = PathUtil.createPath(dst, file.getName());
+            String path = createPath(dst, file.getName());
             if (file.isDirectory()) {
                 doCopyRemoteDirToLocal(file.getPath(), path);
             } else {
@@ -693,7 +654,7 @@ public class SshClient implements Closeable {
             throw new SshException(MSG_NOT_A_DIRECTORY + dst);
         }
 
-        String dstPath = PathUtil.createPath(dstFile.getAbsolutePath(), PathUtil.getFileName(src));
+        String dstPath = createPath(dstFile.getAbsolutePath(), getFileName(src));
 
         doCopyRemoteFileToLocal(src, dstPath);
     }
@@ -701,7 +662,7 @@ public class SshClient implements Closeable {
     /**
      * Delete file, correspond to "rm" command.
      *
-     * @param path the file path
+     * @param path      the file path
      * @param recursive remove directories and their contents recursively
      */
     public void delete(String path, boolean recursive) {
@@ -709,10 +670,10 @@ public class SshClient implements Closeable {
             return;
         }
 
-        String cmd = "rm " + (recursive? "-rf " : "-f ") + path;
+        String cmd = "rm " + (recursive ? "-rf " : "-f ") + path;
         ExecuteResult result = this.execute(cmd);
-        String errMsg = result.stderr;
-        if (StringUtil.isNotBlank(errMsg)) {
+        String errMsg = result.err;
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         }
     }
@@ -735,90 +696,74 @@ public class SshClient implements Closeable {
         this.mkdir(path, false);
     }
 
+    public void mkdirs(String path) {
+        this.mkdir(path, true);
+    }
+
     /**
      * Make directories, correspond to `mkdir -p` command.
      *
-     * @param path valid directory path.
-     * @param recursive no error if existing, make parent directories as needed
+     * @param path          valid directory path.
+     * @param createParents no error if existing, make parent directories as needed
      */
-    private void mkdir(String path, boolean recursive) {
-        String cmd = "mkdir " + (recursive? "-p " : " ") + path;
+    private void mkdir(String path, boolean createParents) {
+        String cmd = "mkdir " + (createParents ? "-p " : " ") + path;
         ExecuteResult result = this.execute(cmd);
-        String errMsg = result.stderr;
-        if (StringUtil.isNotBlank(errMsg)) {
+        String errMsg = result.err;
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         }
-
 
     }
 
     /**
      * Change file group, correspond to `chgrp` command.
-     *
-     * @param path
-     * @param group
-     * @throws IOException
      */
     public void chgrp(String path, String group) {
         this.chgrp(path, group, false);
     }
 
-    /**
-     * Change file group, correspond to `chgrp [-R]` command.
-     *
-     * @param path
-     * @param group
-     * @param recursive operate on files and directories recursively
-     */
     public void chgrp(String path, String group, boolean recursive) {
         path = getAbsolutePath(path);
         // chgrp [-opts] group file
-        String cmd = "chgrp " + (recursive? " -R " : " ") + group + " " + path;
-        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        String cmd = "chgrp " + (recursive ? " -R " : " ") + group + " " + path;
         ExecuteResult result = this.execute(cmd);
-        String errMsg = result.stderr;
-        if (StringUtil.isNotBlank(errMsg)) {
+        String errMsg = result.err;
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         }
     }
 
-    /**
-     * Change file owner, correspond to `chown` command
-     *
-     * @param path
-     * @param owner
-     */
     public void chown(String path, String owner) {
         this.chown(path, owner, false);
     }
 
-    /**
-     * Change file owner, correspond to `chown [-R]` command
-     *
-     * @param path
-     * @param owner
-     * @param recursive operate on files and directories recursively
-     */
     public void chown(String path, String owner, boolean recursive) {
         path = getAbsolutePath(path);
         // chown [-opts] user file
-        String cmd = "chown " + (recursive? " -R " : " ") + owner + " " + path;
+        String cmd = "chown " + (recursive ? " -R " : " ") + owner + " " + path;
         ExecuteResult result = this.execute(cmd);
-        String errMsg = result.stderr;
-        if (StringUtil.isNotBlank(errMsg)) {
+        String errMsg = result.err;
+        if (!Strings.isNullOrEmpty(errMsg)) {
             throw new SshException(errMsg);
         }
     }
 
     public void chmod(String path, FilePermission permission) {
-        // TODO
-        throw new UnsupportedOperationException();
+        chmod(path, permission, false);
+    }
+
+    public void chmod(String path, FilePermission permission, boolean recursive) {
+        String cmd = "chmod " + (recursive ? " -R " : " ") + Integer.toOctalString(permission.flag) + " " + path;
+        ExecuteResult result = this.execute(cmd);
+        if (result.hasError()) {
+            throw new SshException(result.err);
+        }
     }
 
     @Override
     public void close() {
         session.disconnect();
-        sftp.disconnect();
     }
 
     public boolean isOpen() {
@@ -829,13 +774,187 @@ public class SshClient implements Closeable {
         return !isOpen();
     }
 
-    private void loadAuthentication() {
-        this.authType = AuthType.PUBLIC_KEY;
-        // TODO
+    private synchronized Session getSession() {
+        try {
+            ChannelExec testChannel = (ChannelExec) session.openChannel(CHANNEL_EXEC);
+            testChannel.setCommand("true");
+            testChannel.connect();
+            testChannel.disconnect();
+        } catch (Throwable t) {
+            open();
+        }
+        return session;
+    }
+
+    private synchronized ChannelSftp getSftpChannel() {
+        if (sftpChannel == null || sftpChannel.isClosed()) {
+            try {
+                Session session = getSession();
+                sftpChannel = (ChannelSftp) session.openChannel(CHANNEL_SFTP);
+                sftpChannel.connect();
+            } catch (JSchException e) {
+                throw new SshException(e);
+            }
+        }
+        return sftpChannel;
     }
 
     private enum AuthType {
-        PASSWORD,
-        PUBLIC_KEY
+        PASSWORD, PUBLIC_KEY
+    }
+
+    public static class Builder {
+
+        private String username;
+        private String host;
+        private int port;
+        private AuthType authType;
+        private String identify;
+
+        private List<String> sourceFiles = new ArrayList<>();
+
+        private Map<String, String> configs = new HashMap<>();
+
+        private boolean keepAlive = false;
+
+        public Builder(String username, String host, int port) {
+            this.username = username;
+            this.host = host;
+            this.port = port;
+        }
+
+        public Builder authenticateWithPassword(String password) {
+            if (Strings.isNullOrEmpty(password)) {
+                throw new IllegalArgumentException("Password can't be null or empty.");
+            }
+            this.authType = AuthType.PASSWORD;
+            this.identify = password;
+            return this;
+        }
+
+        public Builder authenticateWithKey(String privateKey) {
+            if (Strings.isNullOrEmpty(privateKey)) {
+                throw new IllegalArgumentException("Private key path can't be null or empty.");
+            }
+            this.authType = AuthType.PUBLIC_KEY;
+            this.identify = privateKey;
+            return this;
+        }
+
+        public Builder keepAlive() {
+            this.keepAlive = true;
+            return this;
+        }
+
+        /**
+         * Not supported yet.
+         */
+        private Builder enableCompression() {
+            this.setConfig("compression.s2c", "zlib@openssh.com,zlib,none");
+            this.setConfig("compression.c2s", "zlib@openssh.com,zlib,none");
+            this.setConfig("compression_level", "9");
+            return this;
+        }
+
+        public Builder setConfig(String key, String value) {
+            this.configs.put(key, value);
+            return this;
+        }
+
+        public Builder addSourceFile(String file) {
+            this.sourceFiles.add(file);
+            return this;
+        }
+
+        public SshClient create() {
+            if (null == this.authType)
+                throw new SshException("No authentication information.");
+
+            setConfig("StrictHostKeyChecking", "no");
+
+            SshClient client = new SshClient();
+            client.username = this.username;
+            client.host = this.host;
+            client.port = this.port;
+            client.authType = this.authType;
+            client.identify = this.identify;
+            client.configs = this.configs;
+            client.keepAlive = this.keepAlive;
+            client.sourceFiles = this.sourceFiles;
+
+            client.open();
+            return client;
+        }
+    }
+
+    private <T> T checkNotNull(T reference) {
+        if (reference == null)
+            throw new NullPointerException();
+        return reference;
+    }
+
+    private <T> T checkNotNull(T reference, Object errorMessage) {
+        if (reference == null) {
+            throw new NullPointerException(String.valueOf(errorMessage));
+        }
+
+        return reference;
+    }
+
+    private void checkArgument(boolean expression) {
+        if (!expression) {
+            throw new IllegalArgumentException();
+        }
+    }
+
+    private void checkArgument(boolean expression, Object errorMessage) {
+        if (!expression) {
+            throw new IllegalArgumentException(String.valueOf(errorMessage));
+        }
+    }
+
+    private String getParentPath(String path) {
+        if (path == null || path.trim().length() == 0) {
+            throw new NullPointerException("Path can't be null or empty.");
+        }
+
+        if (path.endsWith(SLASH)) {
+            path = path.substring(path.length() - 1);
+        }
+
+        if (path.contains(SLASH)) {
+            return path.substring(0, path.lastIndexOf(SLASH));
+        } else {
+            return "";
+        }
+    }
+
+    private String getFileName(String path) {
+        if (SLASH.equals(path)) {
+            return SLASH;
+        }
+        List<String> tokens = splitStringAndOmitEmpty(path, SLASH);
+        return tokens.get(tokens.size() - 1);
+    }
+
+    private boolean isAbsolutePath(String path) {
+        return path.startsWith(SLASH);
+    }
+
+    private boolean isRelativePath(String path) {
+        return !isAbsolutePath(path);
+    }
+
+    private List<String> splitStringAndOmitEmpty(String s, String delimiter) {
+        String[] tokens = s.split(delimiter);
+        List<String> result = new ArrayList<>();
+        for (String token : tokens) {
+            if (!Strings.isNullOrEmpty(token)) {
+                result.add(token.trim());
+            }
+        }
+
+        return result;
     }
 }
+

@@ -1,4 +1,4 @@
-package io.github.huiyu.ssh4j.exception;
+package io.github.huiyu.ssh4j;
 
 public class SshException extends RuntimeException {
 

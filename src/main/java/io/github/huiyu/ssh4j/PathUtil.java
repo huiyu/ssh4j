@@ -1,15 +1,10 @@
-package io.github.huiyu.ssh4j.util;
+package io.github.huiyu.ssh4j;
 
 import com.google.common.base.Splitter;
 
 import java.util.List;
 
 
-/**
- * Linux Path Util
- *
- * @author Jeffrey Yu
- */
 public class PathUtil {
 
     public static final String SLASH = "/";

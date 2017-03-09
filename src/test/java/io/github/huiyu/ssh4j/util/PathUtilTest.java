@@ -2,6 +2,8 @@ package io.github.huiyu.ssh4j.util;
 
 import org.junit.Test;
 
+import io.github.huiyu.ssh4j.PathUtil;
+
 import static org.junit.Assert.*;
 
 public class PathUtilTest {
